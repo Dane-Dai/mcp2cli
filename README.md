@@ -1,10 +1,33 @@
-# mcp2cli
+<p align="center">
+  <img src="assets/hero.png" alt="mcp2cli — one CLI for every API" width="700">
+</p>
 
-Turn any MCP server or OpenAPI spec into a CLI — at runtime, with zero codegen.
+<h1 align="center">mcp2cli</h1>
 
-Point `mcp2cli` at an OpenAPI spec URL, a local spec file, or an MCP server, and it dynamically generates a full CLI with typed flags, subcommands, and help text. No wrappers, no generated code, no per-API glue.
+<p align="center">
+  Turn any MCP server or OpenAPI spec into a CLI — at runtime, with zero codegen.
+</p>
 
-```
+---
+
+## The problem: tool sprawl is eating your tokens
+
+If you've connected an LLM to more than a handful of tools, you've felt the pain. Every MCP server, every OpenAPI endpoint — their full schemas get injected into the system prompt on *every single turn*. Your 50-endpoint API costs 3,579 tokens of context *before the conversation even starts*, and that bill is paid again on every message, whether the model touches those tools or not.
+
+This isn't a theoretical concern. [Kagan Yilmaz documented it well](https://kanyilmaz.me/2026/02/23/cli-vs-mcp.html) in his analysis of CLI vs MCP costs, showing that 6 MCP servers with 84 tools consume ~15,540 tokens at session start. His project [CLIHub](https://kanyilmaz.me/2026/02/23/cli-vs-mcp.html) demonstrated that converting MCP servers to CLIs and letting the LLM discover tools on-demand slashes that cost by 92-98%.
+
+mcp2cli takes that insight and runs further with it.
+
+## What mcp2cli adds
+
+CLIHub showed the path: give the LLM a CLI instead of raw tool schemas, and let it `--list` and `--help` its way to what it needs. mcp2cli builds on that idea with a few key differences:
+
+- **No codegen, no recompilation.** Point mcp2cli at a spec URL or MCP server and the CLI exists immediately. When the server adds new endpoints, they appear on the next invocation — no rebuild step, no generated code to commit.
+- **OpenAPI support.** MCP isn't the only schema-rich protocol. mcp2cli handles OpenAPI specs (JSON or YAML, local or remote) with the same CLI interface, the same caching, and the same on-demand discovery. One tool for both worlds.
+- **Spec caching with TTL control.** Fetched specs and MCP tool lists are cached locally with configurable TTL, so repeated invocations don't hit the network. `--refresh` bypasses the cache when you need it.
+- **Single binary, zero dependencies on the server.** The server doesn't need to know mcp2cli exists. It works with any compliant OpenAPI spec or MCP server out of the box.
+
+```bash
 # OpenAPI
 mcp2cli --spec https://api.example.com/openapi.json list-users --limit 10
 
@@ -15,19 +38,13 @@ mcp2cli --mcp-stdio "npx @modelcontextprotocol/server-filesystem /tmp" list-dire
 mcp2cli --mcp https://mcp.example.com/sse echo --message "hello"
 ```
 
-## Why this exists
+## The numbers: how much context do you actually save?
 
-MCP servers and OpenAPI APIs both describe their capabilities in machine-readable schemas. Today, if you want to use them from a terminal, you either write bespoke CLI wrappers or use curl. mcp2cli eliminates that step — one tool talks to any of them.
+We measured this. Not estimates — actual token counts using the cl100k_base tokenizer against real schemas, verified by [an automated test suite](tests/test_token_savings.py).
 
-### LLM context efficiency
+### Per-turn cost
 
-When an LLM uses MCP tools or OpenAPI endpoints natively, every tool definition — name, description, full JSON schema — gets injected into the system prompt. This cost scales linearly with the number of tools and is paid on **every request**, whether the model uses those tools or not.
-
-mcp2cli replaces that with a single shell command pattern. The LLM discovers tools on-demand with `--list` and `--help`, paying only for what it actually uses.
-
-#### Per-turn cost (system prompt overhead)
-
-Every API turn includes tool definitions (native) or a single CLI instruction (mcp2cli).
+Every API turn, the native approach injects all tool schemas. mcp2cli injects a single 67-token instruction.
 
 | Scenario | Native (tokens/turn) | mcp2cli (tokens/turn) | Reduction |
 |---|--:|--:|--:|
@@ -37,11 +54,11 @@ Every API turn includes tool definitions (native) or a single CLI instruction (m
 | Large API (50 endpoints) | 3,579 | 67 | **98%** |
 | Enterprise API (200 endpoints) | 14,316 | 67 | **>99%** |
 
-The **67-token** mcp2cli cost is the system prompt instruction telling the LLM how to use the CLI. Native cost is ~72 tokens per endpoint/tool (measured with cl100k_base on realistic schemas including descriptions, types, enums, and required fields).
+Native cost scales at ~72 tokens per endpoint. mcp2cli's cost is fixed.
 
-#### Full conversation cost
+### Over a full conversation
 
-Token savings compound over a multi-turn conversation. Here's the total context token cost including discovery and tool call outputs:
+The savings compound. Here's the total token cost across a realistic multi-turn conversation, including the one-time discovery cost (`--list`) and tool call outputs:
 
 | Scenario | Turns | Tool calls | Native total | mcp2cli total | Saved |
 |---|--:|--:|--:|--:|--:|
@@ -50,46 +67,48 @@ Token savings compound over a multi-turn conversation. Here's the total context 
 | Large API (50 endpoints) | 20 | 12 | 71,940 | 1,850 | **97%** |
 | Enterprise API (200 endpoints) | 25 | 15 | 358,425 | 2,725 | **99%** |
 
-#### Turn-by-turn breakdown (50-endpoint API)
+A 200-endpoint enterprise API over 25 turns: **355,700 tokens saved**.
 
-Shows how tokens accumulate over a 10-turn conversation with 4 tool calls:
+### Turn-by-turn: watching the gap widen
+
+Here's a 50-endpoint API over 10 turns. The native approach bleeds tokens on every turn; mcp2cli's cost barely moves.
 
 ```
 Turn   Native       mcp2cli      Savings
 ──────────────────────────────────────────
 1      3,579        217          3,362       ← mcp2cli: discovery (--list)
 2      7,158        284          6,874
-3      10,767       381          10,386      ← both: tool call output
+3      10,767       381          10,386      ← tool call
 4      14,346       448          13,898
-5      17,955       545          17,410      ← both: tool call output
+5      17,955       545          17,410      ← tool call
 6      21,534       612          20,922
-7      25,143       709          24,434      ← both: tool call output
+7      25,143       709          24,434      ← tool call
 8      28,722       776          27,946
-9      32,331       873          31,458      ← both: tool call output
+9      32,331       873          31,458      ← tool call
 10     35,910       940          34,970
 
 Total: 34,970 tokens saved (97.4%)
 ```
 
-#### How it works
+### Why the gap is so large
 
-**Native approach** — all tool schemas in context on every turn:
+**Native approach** — pay the full schema tax on every turn:
 ```
 System prompt: "You have these 50 tools: [3,579 tokens of JSON schemas]"
-→ 3,579 tokens consumed per turn, regardless of usage
-→ Over 10 turns: 35,910 tokens
+  → 3,579 tokens consumed per turn, whether used or not
+  → 10 turns = 35,910 tokens
 ```
 
-**mcp2cli approach** — discover on demand:
+**mcp2cli approach** — pay only for what you use:
 ```
-System prompt: "Use mcp2cli --spec <url> <command> [--flags]"  (67 tokens/turn)
-→ LLM runs: mcp2cli --spec <url> --list                       (65 tokens, once)
-→ LLM runs: mcp2cli --spec <url> create-pet --help             (78 tokens, once)
-→ LLM runs: mcp2cli --spec <url> create-pet --name Rex        (0 extra tokens)
-→ Over 10 turns: 940 tokens
+System prompt: "Use mcp2cli --spec <url> <command> [--flags]"   (67 tokens/turn)
+  → mcp2cli --spec <url> --list                                (65 tokens, once)
+  → mcp2cli --spec <url> create-pet --help                     (78 tokens, once)
+  → mcp2cli --spec <url> create-pet --name Rex                 (0 extra tokens)
+  → 10 turns = 940 tokens
 ```
 
-These numbers are verified by `tests/test_token_savings.py` using the cl100k_base tokenizer against real schemas.
+The LLM discovers what it needs, when it needs it. Everything else stays out of context.
 
 ## Install
 
@@ -220,12 +239,16 @@ Both adapters produce the same internal `CommandDef` structure, so the CLI build
 # Install with test + MCP deps
 uv sync --extra test --extra mcp
 
-# Run tests (88 tests covering OpenAPI, MCP stdio, MCP HTTP, and caching)
+# Run tests (96 tests covering OpenAPI, MCP stdio, MCP HTTP, caching, and token savings)
 uv run pytest tests/ -v
 
-# Run just the cache integration tests
-uv run pytest tests/test_cache.py -v
+# Run just the token savings tests
+uv run pytest tests/test_token_savings.py -v -s
 ```
+
+## Acknowledgments
+
+This project was inspired by [Kagan Yilmaz's analysis of CLI vs MCP token costs](https://kanyilmaz.me/2026/02/23/cli-vs-mcp.html) and his work on [CLIHub](https://kanyilmaz.me/2026/02/23/cli-vs-mcp.html). His observation that CLI-based tool access is dramatically more token-efficient than native MCP injection was the spark for mcp2cli.
 
 ## License
 
