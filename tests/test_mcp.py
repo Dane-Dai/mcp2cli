@@ -91,6 +91,34 @@ class TestMCPStdio:
         r = self._run("--env", "TEST_VAR=hello", "echo", "--message", "test")
         assert r.returncode == 0
 
+    # --- GH #14: --search filters tools ---
+
+    def test_search_by_name(self):
+        """--search filters tools by name."""
+        r = self._run("--search", "echo")
+        assert r.returncode == 0
+        assert "echo" in r.stdout
+        assert "add-numbers" not in r.stdout
+
+    def test_search_by_description(self):
+        """--search matches against description too."""
+        r = self._run("--search", "directory")
+        assert r.returncode == 0
+        assert "list-items" in r.stdout
+        assert "echo" not in r.stdout
+
+    def test_search_case_insensitive(self):
+        """--search is case-insensitive."""
+        r = self._run("--search", "ECHO")
+        assert r.returncode == 0
+        assert "echo" in r.stdout
+
+    def test_search_no_matches(self):
+        """--search with no matches prints helpful message."""
+        r = self._run("--search", "nonexistent_xyz")
+        assert r.returncode == 0
+        assert "No tools matching" in r.stdout
+
     # --- GH #15: global options must not shadow tool parameters ---
 
     def test_tool_param_not_shadowed_by_global_env(self):

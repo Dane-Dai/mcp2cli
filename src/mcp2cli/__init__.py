@@ -719,6 +719,17 @@ def list_mcp_commands(commands: list[CommandDef]):
         print(f"  {cmd.name:<40}{desc}")
 
 
+def _filter_commands(commands: list[CommandDef], pattern: str) -> list[CommandDef]:
+    """Filter commands by case-insensitive substring match on name or description."""
+    pattern_lower = pattern.lower()
+    return [
+        cmd
+        for cmd in commands
+        if pattern_lower in cmd.name.lower()
+        or pattern_lower in (cmd.description or "").lower()
+    ]
+
+
 # ---------------------------------------------------------------------------
 # OpenAPI: execution
 # ---------------------------------------------------------------------------
@@ -834,6 +845,7 @@ def run_mcp_http(
     prompt_action: str | None = None,
     prompt_name: str | None = None,
     prompt_arguments: dict | None = None,
+    search_pattern: str | None = None,
 ):
     extra = dict(
         resource_action=resource_action,
@@ -841,6 +853,7 @@ def run_mcp_http(
         prompt_action=prompt_action,
         prompt_name=prompt_name,
         prompt_arguments=prompt_arguments,
+        search_pattern=search_pattern,
     )
 
     async def _run():
@@ -923,6 +936,7 @@ def run_mcp_stdio(
     prompt_action: str | None = None,
     prompt_name: str | None = None,
     prompt_arguments: dict | None = None,
+    search_pattern: str | None = None,
 ):
     extra = dict(
         resource_action=resource_action,
@@ -930,6 +944,7 @@ def run_mcp_stdio(
         prompt_action=prompt_action,
         prompt_name=prompt_name,
         prompt_arguments=prompt_arguments,
+        search_pattern=search_pattern,
     )
 
     import anyio
@@ -978,6 +993,7 @@ async def _mcp_session(
     prompt_action: str | None = None,
     prompt_name: str | None = None,
     prompt_arguments: dict | None = None,
+    search_pattern: str | None = None,
 ):
     # Handle resource operations
     if resource_action:
@@ -1004,7 +1020,14 @@ async def _mcp_session(
             for t in result.tools
         ]
         commands = extract_mcp_commands(tools)
-        print("\nAvailable tools:")
+        if search_pattern:
+            commands = _filter_commands(commands, search_pattern)
+            if not commands:
+                print(f"\nNo tools matching '{search_pattern}'.")
+                return
+            print(f"\nTools matching '{search_pattern}':")
+        else:
+            print("\nAvailable tools:")
         list_mcp_commands(commands)
         return
 
@@ -1563,6 +1586,7 @@ def handle_mcp(
     prompt_action: str | None = None,
     prompt_name: str | None = None,
     prompt_arguments: dict | None = None,
+    search_pattern: str | None = None,
 ):
     key = cache_key_override or cache_key_for(source)
 
@@ -1623,6 +1647,7 @@ def handle_mcp(
                 ttl,
                 refresh,
                 toon=toon,
+                search_pattern=search_pattern,
             )
         else:
             run_mcp_http(
@@ -1639,6 +1664,7 @@ def handle_mcp(
                 toon=toon,
                 transport=transport,
                 oauth_provider=oauth_provider,
+                search_pattern=search_pattern,
             )
         return
 
@@ -1866,6 +1892,13 @@ def main():
         dest="list_commands",
         help="List available subcommands",
     )
+    pre.add_argument(
+        "--search",
+        default=None,
+        dest="search_pattern",
+        metavar="PATTERN",
+        help="Search tools by name or description (case-insensitive substring match)",
+    )
     pre.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
     pre.add_argument("--raw", action="store_true", help="Print raw response body")
     pre.add_argument(
@@ -1959,6 +1992,11 @@ def main():
     global_argv, tool_argv = _split_at_subcommand(sys.argv[1:], pre)
     pre_args, leftover = pre.parse_known_args(global_argv)
     remaining = leftover + tool_argv
+
+    # --search implies --list
+    search_pattern = pre_args.search_pattern
+    if search_pattern:
+        pre_args.list_commands = True
 
     # Parse auth headers (values support env: and file: prefixes)
     auth_headers: list[tuple[str, str]] = []
@@ -2136,7 +2174,14 @@ def main():
         if pre_args.list_commands:
             result = _session_request(sess_name, "list_tools")
             commands = extract_mcp_commands(result)
-            print("\nAvailable tools:")
+            if search_pattern:
+                commands = _filter_commands(commands, search_pattern)
+                if not commands:
+                    print(f"\nNo tools matching '{search_pattern}'.")
+                    return
+                print(f"\nTools matching '{search_pattern}':")
+            else:
+                print("\nAvailable tools:")
             list_mcp_commands(commands)
             return
 
@@ -2229,6 +2274,7 @@ def main():
             prompt_action=prompt_action,
             prompt_name=prompt_name,
             prompt_arguments=prompt_arguments,
+            search_pattern=search_pattern,
         )
         return
 
@@ -2243,6 +2289,12 @@ def main():
     commands = extract_openapi_commands(spec)
 
     if pre_args.list_commands:
+        if search_pattern:
+            commands = _filter_commands(commands, search_pattern)
+            if not commands:
+                print(f"\nNo tools matching '{search_pattern}'.")
+                return
+            print(f"\nTools matching '{search_pattern}':")
         list_openapi_commands(commands)
         return
 
