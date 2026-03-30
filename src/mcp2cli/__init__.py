@@ -515,9 +515,11 @@ def build_oauth_provider(
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata
 
     _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+    using_cached_redirect_uri = False
 
     if redirect_uri is None and reuse_cached_redirect_uri:
         redirect_uri = _load_cached_redirect_uri(storage)
+        using_cached_redirect_uri = redirect_uri is not None
 
     if redirect_uri is not None:
         parsed = urlparse(redirect_uri)
@@ -588,7 +590,7 @@ def build_oauth_provider(
         else:
             server = HTTPServer((callback_host, port), _CallbackHandler)
     except OSError as exc:
-        if reuse_cached_redirect_uri and redirect_uri is not None:
+        if using_cached_redirect_uri:
             print(
                 f"Error: could not bind cached OAuth redirect URI '{redirect_uri}': {exc}. "
                 "Because --oauth-reuse-cached-redirect-uri was explicitly enabled, "

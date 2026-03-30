@@ -87,6 +87,7 @@ Tokens are persisted in `~/.cache/mcp2cli/oauth/` so subsequent calls reuse exis
 and refresh automatically when they expire.
 If you pass `--oauth-reuse-cached-redirect-uri`, mcp2cli also reuses the cached redirect URI from
 stored OAuth client metadata when available, and fails fast if that callback port is already in use.
+If you also pass `--oauth-redirect-uri`, that explicit redirect URI takes precedence over the cached one.
 
 ### Secrets from environment or files
 
