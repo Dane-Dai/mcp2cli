@@ -1196,8 +1196,28 @@ def extract_graphql_commands(schema: dict) -> list[CommandDef]:
     return commands
 
 
-def list_graphql_commands(commands: list[CommandDef]):
+def _truncate_description(description: str, max_len: int) -> str:
+    """Truncate at a word boundary and append '...'."""
+    if len(description) <= max_len:
+        return description
+    return description[:max_len].rsplit(" ", 1)[0].rstrip() + "..."
+
+
+def _wrap_description(description: str, indent: int, total_width: int = 110) -> str:
+    """Wrap long descriptions; indent continuation lines to align with description column."""
+    import textwrap
+    return textwrap.fill(
+        description,
+        width=total_width,
+        subsequent_indent=" " * indent,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+
+
+def list_graphql_commands(commands: list[CommandDef], verbose: bool = False):
     """Group commands by operation type and print."""
+
     groups: dict[str, list[CommandDef]] = {}
     for cmd in commands:
         key = cmd.graphql_operation_type or "other"
@@ -1210,7 +1230,14 @@ def list_graphql_commands(commands: list[CommandDef]):
         label = "queries" if group == "query" else "mutations"
         print(f"\n{label}:")
         for cmd in cmds:
-            desc = f"  {cmd.description[:60]}" if cmd.description else ""
+            if cmd.description:
+                if verbose:
+                    wrapped = _wrap_description(cmd.description, indent=42, total_width=100)
+                    desc = f"  {wrapped}"
+                else:
+                    desc = f"  {_truncate_description(cmd.description, 60)}"
+            else:
+                desc = ""
             print(f"  {cmd.name:<40}{desc}")
 
 
@@ -1326,18 +1353,19 @@ def handle_graphql(
     oauth_provider: "httpx.Auth | None" = None,
     jq_expr: str | None = None,
     head: int | None = None,
+    verbose: bool = False,
 ):
     """Top-level handler for --graphql mode."""
     schema = load_graphql_schema(url, auth_headers, cache_key, ttl, refresh, oauth_provider=oauth_provider)
     commands = extract_graphql_commands(schema)
 
     if list_mode:
-        list_graphql_commands(commands)
+        list_graphql_commands(commands, verbose=verbose)
         return
 
     if not remaining:
         print("Available operations:")
-        list_graphql_commands(commands)
+        list_graphql_commands(commands, verbose=verbose)
         print("\nUse --list for the same output, or provide a subcommand.")
         return
 
@@ -1760,7 +1788,7 @@ def build_argparse(
 # ---------------------------------------------------------------------------
 
 
-def list_openapi_commands(commands: list[CommandDef]):
+def list_openapi_commands(commands: list[CommandDef], verbose: bool = False):
     groups: dict[str, list[CommandDef]] = {}
     for cmd in commands:
         prefix = cmd.name.split("-", 1)[0] if "-" in cmd.name else "other"
@@ -1772,13 +1800,24 @@ def list_openapi_commands(commands: list[CommandDef]):
             method = (cmd.method or "").upper()
             line = f"  {cmd.name:<45} {method:<6}"
             if cmd.description:
-                line += f" {cmd.description[:60]}"
+                if verbose:
+                    wrapped = _wrap_description(cmd.description, indent=54, total_width=110)
+                    line += f" {wrapped}"
+                else:
+                    line += f" {_truncate_description(cmd.description, 60)}"
             print(line)
 
 
-def list_mcp_commands(commands: list[CommandDef]):
+def list_mcp_commands(commands: list[CommandDef], verbose: bool = False):
     for cmd in commands:
-        desc = f"  {cmd.description[:70]}" if cmd.description else ""
+        if cmd.description:
+            if verbose:
+                wrapped = _wrap_description(cmd.description, indent=42, total_width=110)
+                desc = f"  {wrapped}"
+            else:
+                desc = f"  {_truncate_description(cmd.description, 70)}"
+        else:
+            desc = ""
         print(f"  {cmd.name:<40}{desc}")
 
 
@@ -1958,6 +1997,7 @@ def run_mcp_http(
     search_pattern: str | None = None,
     jq_expr: str | None = None,
     head: int | None = None,
+    verbose: bool = False,
 ):
     extra = dict(
         resource_action=resource_action,
@@ -1968,6 +2008,7 @@ def run_mcp_http(
         search_pattern=search_pattern,
         jq_expr=jq_expr,
         head=head,
+        verbose=verbose,
     )
 
     async def _run():
@@ -2053,6 +2094,7 @@ def run_mcp_stdio(
     search_pattern: str | None = None,
     jq_expr: str | None = None,
     head: int | None = None,
+    verbose: bool = False,
 ):
     extra = dict(
         resource_action=resource_action,
@@ -2063,6 +2105,7 @@ def run_mcp_stdio(
         search_pattern=search_pattern,
         jq_expr=jq_expr,
         head=head,
+        verbose=verbose,
     )
 
     import anyio
@@ -2114,6 +2157,7 @@ async def _mcp_session(
     search_pattern: str | None = None,
     jq_expr: str | None = None,
     head: int | None = None,
+    verbose: bool = False,
 ):
     # Handle resource operations
     if resource_action:
@@ -2150,7 +2194,7 @@ async def _mcp_session(
             print(f"\nTools matching '{search_pattern}':")
         else:
             print("\nAvailable tools:")
-        list_mcp_commands(commands)
+        list_mcp_commands(commands, verbose=verbose)
         return
 
     if tool_name is None:
@@ -2768,6 +2812,7 @@ def handle_mcp(
     bake_config: BakeConfig | None = None,
     jq_expr: str | None = None,
     head: int | None = None,
+    verbose: bool = False,
 ):
     key = cache_key_override or cache_key_for(source)
 
@@ -2802,7 +2847,7 @@ def handle_mcp(
                 commands, bake_config.include, bake_config.exclude, bake_config.methods,
             )
             print("\nAvailable tools:")
-            list_mcp_commands(commands)
+            list_mcp_commands(commands, verbose=verbose)
             return
         _dispatch_mcp_call(
             source, is_stdio, auth_headers, env_vars,
@@ -2810,6 +2855,7 @@ def handle_mcp(
             toon=toon, transport=transport, oauth_provider=oauth_provider,
             search_pattern=search_pattern,
             jq_expr=jq_expr, head=head,
+            verbose=verbose,
         )
         return
 
@@ -2827,7 +2873,7 @@ def handle_mcp(
 
     if not remaining:
         print("Available tools:")
-        list_mcp_commands(commands)
+        list_mcp_commands(commands, verbose=verbose)
         print("\nUse --list for the same output, or provide a subcommand.")
         return
 
@@ -3024,6 +3070,12 @@ def _build_main_parser() -> argparse.ArgumentParser:
         dest="search_pattern",
         metavar="PATTERN",
         help="Search tools by name or description (case-insensitive substring match)",
+    )
+    pre.add_argument(
+        "--verbose",
+        action="store_true",
+        dest="verbose",
+        help="Show full tool descriptions in --list output, wrapped to terminal width (default: truncated with ...)",
     )
     pre.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
     pre.add_argument("--raw", action="store_true", help="Print raw response body")
@@ -3333,7 +3385,7 @@ def _handle_session_operations(
             print(f"\nTools matching '{search_pattern}':")
         else:
             print("\nAvailable tools:")
-        list_mcp_commands(commands)
+        list_mcp_commands(commands, verbose=pre_args.verbose)
         return True
 
     # Tool call via session
@@ -3341,7 +3393,7 @@ def _handle_session_operations(
         result = _session_request(sess_name, "list_tools")
         commands = extract_mcp_commands(result)
         print("Available tools:")
-        list_mcp_commands(commands)
+        list_mcp_commands(commands, verbose=pre_args.verbose)
         print("\nUse --list for the same output, or provide a subcommand.")
         return True
 
@@ -3438,7 +3490,7 @@ def _handle_openapi_mode(
                 print(f"\nNo tools matching '{search_pattern}'.")
                 return
             print(f"\nTools matching '{search_pattern}':")
-        list_openapi_commands(commands)
+        list_openapi_commands(commands, verbose=pre_args.verbose)
         return
 
     if not remaining:
@@ -3540,6 +3592,7 @@ def _main_impl(argv: list[str], bake_config: BakeConfig | None = None):
             oauth_provider=oauth_provider,
             jq_expr=pre_args.jq,
             head=pre_args.head,
+            verbose=pre_args.verbose,
         )
         return
 
@@ -3571,6 +3624,7 @@ def _main_impl(argv: list[str], bake_config: BakeConfig | None = None):
             bake_config=bake_config,
             jq_expr=pre_args.jq,
             head=pre_args.head,
+            verbose=pre_args.verbose,
         )
         return
 
