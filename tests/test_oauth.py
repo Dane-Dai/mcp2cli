@@ -199,6 +199,137 @@ class TestBuildOAuthProvider:
         redirect_uris = [str(u) for u in provider.context.client_metadata.redirect_uris]
         assert expected_uri in redirect_uris
 
+    def test_reuse_cached_redirect_uri_when_flag_enabled(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mcp2cli, "OAUTH_DIR", tmp_path / "oauth")
+        storage = mcp2cli.FileTokenStorage("https://example.com/mcp")
+        storage._client_path.write_text(json.dumps({
+            "client_id": "cached-client",
+            "redirect_uris": ["http://127.0.0.1:19876/callback"],
+        }))
+
+        original_http_server = mcp2cli.HTTPServer
+        bound_addresses = []
+
+        class DummyHTTPServer:
+            def __init__(self, server_address, handler_class):
+                bound_addresses.append(server_address)
+
+            def handle_request(self):
+                return None
+
+            def server_close(self):
+                return None
+
+        monkeypatch.setattr(mcp2cli, "HTTPServer", DummyHTTPServer)
+        monkeypatch.setattr(mcp2cli, "_find_free_port", lambda: 24567)
+        try:
+            provider = mcp2cli.build_oauth_provider(
+                "https://example.com/mcp",
+                reuse_cached_redirect_uri=True,
+            )
+        finally:
+            monkeypatch.setattr(mcp2cli, "HTTPServer", original_http_server)
+
+        from mcp.client.auth.oauth2 import OAuthClientProvider
+
+        assert isinstance(provider, OAuthClientProvider)
+        redirect_uris = [str(u) for u in provider.context.client_metadata.redirect_uris]
+        assert redirect_uris == ["http://127.0.0.1:19876/callback"]
+        assert bound_addresses == [("127.0.0.1", 19876)]
+
+    def test_reuse_cached_redirect_uri_falls_back_when_cache_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mcp2cli, "OAUTH_DIR", tmp_path / "oauth")
+
+        original_http_server = mcp2cli.HTTPServer
+        bound_addresses = []
+
+        class DummyHTTPServer:
+            def __init__(self, server_address, handler_class):
+                bound_addresses.append(server_address)
+
+            def handle_request(self):
+                return None
+
+            def server_close(self):
+                return None
+
+        monkeypatch.setattr(mcp2cli, "HTTPServer", DummyHTTPServer)
+        monkeypatch.setattr(mcp2cli, "_find_free_port", lambda: 24567)
+        try:
+            provider = mcp2cli.build_oauth_provider(
+                "https://example.com/mcp",
+                reuse_cached_redirect_uri=True,
+            )
+        finally:
+            monkeypatch.setattr(mcp2cli, "HTTPServer", original_http_server)
+
+        redirect_uris = [str(u) for u in provider.context.client_metadata.redirect_uris]
+        assert redirect_uris == ["http://127.0.0.1:24567/callback"]
+        assert bound_addresses == [("127.0.0.1", 24567)]
+
+    def test_reuse_cached_redirect_uri_bind_failure_exits(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(mcp2cli, "OAUTH_DIR", tmp_path / "oauth")
+        storage = mcp2cli.FileTokenStorage("https://example.com/mcp")
+        storage._client_path.write_text(json.dumps({
+            "client_id": "cached-client",
+            "redirect_uris": ["http://127.0.0.1:19876/callback"],
+        }))
+
+        original_http_server = mcp2cli.HTTPServer
+
+        class RaisingHTTPServer:
+            def __init__(self, server_address, handler_class):
+                raise OSError("Address already in use")
+
+        monkeypatch.setattr(mcp2cli, "HTTPServer", RaisingHTTPServer)
+        try:
+            with pytest.raises(SystemExit):
+                mcp2cli.build_oauth_provider(
+                    "https://example.com/mcp",
+                    reuse_cached_redirect_uri=True,
+                )
+        finally:
+            monkeypatch.setattr(mcp2cli, "HTTPServer", original_http_server)
+
+        err = capsys.readouterr().err
+        assert "--oauth-reuse-cached-redirect-uri" in err
+        assert "http://127.0.0.1:19876/callback" in err
+
+    def test_explicit_redirect_uri_takes_precedence_over_cached_reuse(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mcp2cli, "OAUTH_DIR", tmp_path / "oauth")
+        storage = mcp2cli.FileTokenStorage("https://example.com/mcp")
+        storage._client_path.write_text(json.dumps({
+            "client_id": "cached-client",
+            "redirect_uris": ["http://127.0.0.1:19876/callback"],
+        }))
+
+        original_http_server = mcp2cli.HTTPServer
+        bound_addresses = []
+
+        class DummyHTTPServer:
+            def __init__(self, server_address, handler_class):
+                bound_addresses.append(server_address)
+
+            def handle_request(self):
+                return None
+
+            def server_close(self):
+                return None
+
+        monkeypatch.setattr(mcp2cli, "HTTPServer", DummyHTTPServer)
+        try:
+            provider = mcp2cli.build_oauth_provider(
+                "https://example.com/mcp",
+                redirect_uri="http://127.0.0.1:24567/callback",
+                reuse_cached_redirect_uri=True,
+            )
+        finally:
+            monkeypatch.setattr(mcp2cli, "HTTPServer", original_http_server)
+
+        redirect_uris = [str(u) for u in provider.context.client_metadata.redirect_uris]
+        assert redirect_uris == ["http://127.0.0.1:24567/callback"]
+        assert bound_addresses == [("127.0.0.1", 24567)]
+
     def test_client_id_only_preseeds_storage(self, tmp_path, monkeypatch):
         """client_id without client_secret pre-seeds client.json to skip DCR."""
         monkeypatch.setattr(mcp2cli, "OAUTH_DIR", tmp_path / "oauth")
@@ -272,6 +403,7 @@ class TestOAuthCLIValidation:
         assert "--oauth-client-secret" in r.stdout
         assert "--oauth-scope" in r.stdout
         assert "--oauth-redirect-uri" in r.stdout
+        assert "--oauth-reuse-cached-redirect-uri" in r.stdout
 
     def test_env_secret_in_client_id(self):
         """--oauth-client-id env:VAR should resolve from environment."""

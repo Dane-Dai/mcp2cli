@@ -64,6 +64,8 @@ Options:
   --oauth-client-id ID    OAuth client ID (supports env:/file: prefixes)
   --oauth-client-secret S OAuth client secret (supports env:/file: prefixes)
   --oauth-scope SCOPE     OAuth scope(s) to request
+  --oauth-reuse-cached-redirect-uri
+                          Reuse the cached OAuth redirect URI when available
   --cache-key KEY         Custom cache key
   --cache-ttl SECONDS     Cache TTL (default: 3600)
   --refresh               Bypass cache
@@ -118,9 +120,15 @@ mcp2cli --mcp https://mcp.example.com/sse \
 
 # With scopes
 mcp2cli --mcp https://mcp.example.com/sse --oauth --oauth-scope "read write" --list
+
+# Reuse the cached redirect URI instead of picking a new random callback port
+mcp2cli --mcp https://mcp.example.com/sse --oauth --oauth-reuse-cached-redirect-uri --list
 ```
 
 Tokens are cached in `~/.cache/mcp2cli/oauth/` and refreshed automatically.
+If `--oauth-reuse-cached-redirect-uri` is provided, mcp2cli also reuses the cached redirect URI
+from stored OAuth client metadata when available and fails fast if that callback port is already in
+use. If `--oauth-redirect-uri` is also provided, the explicit redirect URI takes precedence.
 
 ### Transport selection (MCP HTTP only)
 

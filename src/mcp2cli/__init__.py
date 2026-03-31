@@ -460,6 +460,20 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _load_cached_redirect_uri(storage: "FileTokenStorage") -> str | None:
+    try:
+        data = json.loads(storage._client_path.read_text())
+    except Exception:
+        return None
+    redirect_uris = data.get("redirect_uris")
+    if not isinstance(redirect_uris, list):
+        return None
+    for uri in redirect_uris:
+        if isinstance(uri, str) and uri:
+            return uri
+    return None
+
+
 def build_oauth_provider(
     server_url: str,
     *,
@@ -467,6 +481,7 @@ def build_oauth_provider(
     client_secret: str | None = None,
     scope: str | None = None,
     redirect_uri: str | None = None,
+    reuse_cached_redirect_uri: bool = False,
 ) -> "httpx.Auth":
     """Build an OAuth provider for HTTP connections.
 
@@ -477,7 +492,9 @@ def build_oauth_provider(
                                    registration.
 
     redirect_uri controls the full callback URL (scheme, host, port, path).
-    When None, defaults to http://127.0.0.1:<random-free-port>/callback.
+    When None, defaults to http://127.0.0.1:<random-free-port>/callback unless
+    reuse_cached_redirect_uri is enabled and cached client metadata already has
+    a redirect_uri to reuse.
     """
     storage = FileTokenStorage(server_url)
 
@@ -498,6 +515,11 @@ def build_oauth_provider(
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata
 
     _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+    using_cached_redirect_uri = False
+
+    if redirect_uri is None and reuse_cached_redirect_uri:
+        redirect_uri = _load_cached_redirect_uri(storage)
+        using_cached_redirect_uri = redirect_uri is not None
 
     if redirect_uri is not None:
         parsed = urlparse(redirect_uri)
@@ -557,15 +579,28 @@ def build_oauth_provider(
     _CallbackHandler.error = None
     _CallbackHandler.done = threading.Event()
 
-    if callback_host == "::1":
-        import socket as _socket
+    try:
+        if callback_host == "::1":
+            import socket as _socket
 
-        class _IPv6HTTPServer(HTTPServer):
-            address_family = _socket.AF_INET6
+            class _IPv6HTTPServer(HTTPServer):
+                address_family = _socket.AF_INET6
 
-        server = _IPv6HTTPServer((callback_host, port), _CallbackHandler)
-    else:
-        server = HTTPServer((callback_host, port), _CallbackHandler)
+            server = _IPv6HTTPServer((callback_host, port), _CallbackHandler)
+        else:
+            server = HTTPServer((callback_host, port), _CallbackHandler)
+    except OSError as exc:
+        if using_cached_redirect_uri:
+            print(
+                f"Error: could not bind cached OAuth redirect URI '{redirect_uri}': {exc}. "
+                "Because --oauth-reuse-cached-redirect-uri was explicitly enabled, "
+                "mcp2cli will not fall back to a new random callback port. "
+                "Free that port or omit --oauth-reuse-cached-redirect-uri to use "
+                "the previous behavior.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        raise
 
     async def redirect_handler(auth_url: str) -> None:
         print(f"Opening browser for authorization...", file=sys.stderr)
@@ -1442,6 +1477,8 @@ def _baked_to_argv(config: dict) -> list[str]:
         argv += ["--oauth-scope", config["oauth_scope"]]
     if config.get("oauth_redirect_uri"):
         argv += ["--oauth-redirect-uri", config["oauth_redirect_uri"]]
+    if config.get("oauth_reuse_cached_redirect_uri"):
+        argv.append("--oauth-reuse-cached-redirect-uri")
     return argv
 
 
@@ -1490,6 +1527,7 @@ def _bake_create(argv: list[str]) -> None:
     p.add_argument("--oauth-client-secret", default=None)
     p.add_argument("--oauth-scope", default=None)
     p.add_argument("--oauth-redirect-uri", default=None, metavar="URI")
+    p.add_argument("--oauth-reuse-cached-redirect-uri", action="store_true")
     p.add_argument("--include", default="", help="Comma-separated include globs")
     p.add_argument("--exclude", default="", help="Comma-separated exclude globs")
     p.add_argument("--methods", default="", help="Comma-separated HTTP methods")
@@ -1544,6 +1582,7 @@ def _bake_create(argv: list[str]) -> None:
         "oauth_client_secret": args.oauth_client_secret,
         "oauth_scope": args.oauth_scope,
         "oauth_redirect_uri": args.oauth_redirect_uri,
+        "oauth_reuse_cached_redirect_uri": args.oauth_reuse_cached_redirect_uri,
         "include": [x.strip() for x in args.include.split(",") if x.strip()],
         "exclude": [x.strip() for x in args.exclude.split(",") if x.strip()],
         "methods": [x.strip().upper() for x in args.methods.split(",") if x.strip()],
@@ -3107,6 +3146,13 @@ def _build_main_parser() -> argparse.ArgumentParser:
         help="Full redirect URI for the OAuth callback (e.g. http://localhost:3334/oauth/callback). "
              "Overrides the default http://127.0.0.1:<random-port>/callback.",
     )
+    pre.add_argument(
+        "--oauth-reuse-cached-redirect-uri",
+        action="store_true",
+        help="Reuse the cached OAuth redirect URI from prior client metadata when available. "
+             "If the cached callback port is unavailable, fail fast instead of falling back "
+             "to a new random port.",
+    )
     # Resource flags
     pre.add_argument(
         "--list-resources", action="store_true", help="List available resources"
@@ -3226,6 +3272,7 @@ def _setup_oauth(pre_args):
         client_secret=client_secret,
         scope=pre_args.oauth_scope,
         redirect_uri=pre_args.oauth_redirect_uri,
+        reuse_cached_redirect_uri=pre_args.oauth_reuse_cached_redirect_uri,
     )
 
 
